@@ -10,6 +10,8 @@ import os
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from sklearn.metrics import accuracy_score
+import  json
+
 
 class DeepNet(nn.Module):
     def __init__(self):
@@ -22,7 +24,7 @@ class DeepNet(nn.Module):
         self.conv5 = nn.Conv2d(self.nb_channels, self.nb_channels, kernel_size=3, padding=1)
         self.fc1 = nn.Linear(16 * self.nb_channels, 512)
         self.fc2 = nn.Linear(512, 512)
-        self.fc3 = nn.Linear(512, 2)
+        self.fc3 = nn.Linear(512, 1)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -49,12 +51,12 @@ class DeepNet(nn.Module):
 
 
 
-# Define training, validation, and test loops
 def train(model, device, train_loader, optimizer, criterion):
     model.train()
     running_loss = 0.0
     for data, target in train_loader:
         data, target = data.to(device), target.to(device)
+        target = target.float().view(-1, 1)  # Ensure target is of shape (batch_size, 1)
         optimizer.zero_grad()
         output = model(data)
         loss = criterion(output, target)
@@ -71,10 +73,11 @@ def validate(model, device, val_loader, criterion):
     with torch.no_grad():
         for data, target in val_loader:
             data, target = data.to(device), target.to(device)
+            target = target.float().view(-1, 1)  # Ensure target is of shape (batch_size, 1)
             output = model(data)
             loss = criterion(output, target)
             val_loss += loss.item()
-            preds = output.argmax(dim=1)
+            preds = torch.sigmoid(output).round()  # Apply sigmoid and round to get binary predictions
             predictions.extend(preds.cpu().numpy())
             true_labels.extend(target.cpu().numpy())
     accuracy = accuracy_score(true_labels, predictions)
@@ -87,8 +90,9 @@ def test(model, device, test_loader):
     with torch.no_grad():
         for data, target in test_loader:
             data, target = data.to(device), target.to(device)
+            target = target.float().view(-1, 1)  # Ensure target is of shape (batch_size, 1)
             output = model(data)
-            preds = output.argmax(dim=1)
+            preds = torch.sigmoid(output).round()  # Apply sigmoid and round to get binary predictions
             predictions.extend(preds.cpu().numpy())
             true_labels.extend(target.cpu().numpy())
     accuracy = accuracy_score(true_labels, predictions)
@@ -122,7 +126,7 @@ def hyperparameter_tuning(params, train_dataset, val_dataset):
     for param in params:
         model = DeepNet().to(device)
         optimizer = optim.Adam(model.parameters(), lr=param['lr'])
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.BCEWithLogitsLoss()
         train_loader = DataLoader(train_dataset, batch_size=param['batch_size'], shuffle=True)
         val_loader = DataLoader(val_dataset, batch_size=param['batch_size'], shuffle=False)
         
@@ -142,6 +146,24 @@ def hyperparameter_tuning(params, train_dataset, val_dataset):
     return best_params, best_val_accuracy
 
 
+def visualize_sample_predictions(test_loader, model, device, n_samples=5):
+    model.eval()
+    fig, axes = plt.subplots(1, n_samples, figsize=(15, 15))
+    with torch.no_grad():
+        for i, (data, target) in enumerate(test_loader):
+            if i >= n_samples:
+                break
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            preds = torch.sigmoid(output).round().cpu().numpy()
+            for j in range(data.size(0)):
+                if j >= n_samples:
+                    break
+                img = data[j].cpu().numpy().transpose((1, 2, 0))
+                axes[j].imshow(img)
+                axes[j].set_title(f'Pred: {int(preds[j][0])}, True: {int(target[j].item())}')
+                axes[j].axis('off')
+    plt.show()
 
 
 if __name__ == "__main__":
@@ -150,31 +172,58 @@ if __name__ == "__main__":
     transforms.ToTensor(),          # Convert images to tensors
     transforms.Normalize((0.5,), (0.5,))  # Normalize images (mean and std should be adjusted based on your dataset)
 ])
-    train_dataset = datasets.ImageFolder(root='/home/results_problem_1/train', transform=transform)
-    val_dataset = datasets.ImageFolder(root='/home/results_problem_1/val', transform=transform)
-    test_dataset = datasets.ImageFolder(root='/home/results_problem_1/test', transform=transform)
+    #train_dataset = datasets.ImageFolder(root='recurrent_vision_transformers/results_problem_1/train', transform=transform)
+    #val_dataset = datasets.ImageFolder(root='recurrent_vision_transformers/results_problem_1/val', transform=transform)
+    test_dataset = datasets.ImageFolder(root='recurrent_vision_transformers/results_problem_1/test', transform=transform)
 
     
     print("Created train_dataset, val_dataset, and test_dataset")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using {device}")
 
     # Hyperparameter tuning
     params = [
-        {'lr': 0.001, 'batch_size': 32, 'epochs': 5},
-        #{'lr': 0.0001, 'batch_size': 64, 'epochs': 10}
+        {'lr': 0.0001, 'batch_size': 64, 'epochs': 10}
     ]
-    best_params, best_val_accuracy = hyperparameter_tuning(params, train_dataset, val_dataset)
-    print(f"Best parameters: {best_params}, Best validation accuracy: {best_val_accuracy}")
+    #best_params, best_val_accuracy = hyperparameter_tuning(params, train_dataset, val_dataset)
+    #print(f"Best parameters: {best_params}, Best validation accuracy: {best_val_accuracy}")
 
+    best_params = params[0]
     # Load best model and test
     model = DeepNet().to(device)
     optimizer = optim.Adam(model.parameters(), lr=best_params['lr'])
-    load_checkpoint('best_model.pth', model, optimizer)
+    epoch, train_losses, val_losses = load_checkpoint('best_model.pth', model, optimizer)
     test_loader = DataLoader(test_dataset, batch_size=best_params['batch_size'], shuffle=False)
     test_accuracy, predictions, true_labels = test(model, device, test_loader)
     print(f"Test accuracy: {test_accuracy}")
 
-    # Save predictions to file
-    with open('predictions.json', 'w') as f:
-        json.dump({'predictions': predictions, 'true_labels': true_labels}, f)
+   
+
+
+    predictions = [int(prediction) for prediction in predictions]
+    true_labels = [int(true_label) for true_label in true_labels]
+    train_losses = [loss for loss in train_losses]
+    val_losses = [loss for loss in val_losses]
+    #train_accuracies = [float(acc) for acc in train_accuracies]
+    #val_accuracies = [float(acc) for acc in val_accuracies]
+
+    #print(type(predictions))
+    #print(type(true_labels))
+    #print(type(train_losses))
+    #print(type(val_losses))
+    # Save predictions and losses to file
+    results = {
+        'predictions': predictions,
+        'true_labels': true_labels,
+        'train_losses': train_losses,
+        'val_losses': val_losses,
+        #'train_accuracies': train_accuracies,
+        #'val_accuracies': val_accuracies,
+        'test_accuracy': test_accuracy
+    }
+
+    with open('results.json', 'w') as f:
+        json.dump(results, f)
+
+
