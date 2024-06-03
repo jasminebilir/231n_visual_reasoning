@@ -11,6 +11,8 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from sklearn.metrics import accuracy_score
 import  json
+import argparse
+import torch.backends.cudnn as cudnn
 
 
 class DeepNet(nn.Module):
@@ -120,7 +122,7 @@ def load_checkpoint(filepath, model, optimizer):
     return epoch, train_losses, val_losses
 
 # Hyperparameter tuning
-def hyperparameter_tuning(params, train_dataset, val_dataset):
+def hyperparameter_tuning(params, train_dataset, val_dataset, problem_number):
     best_val_accuracy = 0.0
     best_params = None
     for param in params:
@@ -141,7 +143,7 @@ def hyperparameter_tuning(params, train_dataset, val_dataset):
             if val_accuracy > best_val_accuracy:
                 best_val_accuracy = val_accuracy
                 best_params = param
-                save_checkpoint(model, optimizer, epoch, train_losses, val_losses, 'best_model.pth')
+                save_checkpoint(model, optimizer, epoch, train_losses, val_losses, problem_number + '_best_model.pth')
             print(f"Epoch: {epoch}, Train_Loss: {train_loss}, Val_Loss: {val_loss}")
     return best_params, best_val_accuracy
 
@@ -167,16 +169,27 @@ def visualize_sample_predictions(test_loader, model, device, n_samples=5):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--problem_number', type=str, required=True, help='Problem Number')
+    args = parser.parse_args()
+
+    #torch.backends.cudnn.benchmark = False  # Try setting this to False
+    #torch.backends.cudnn.deterministic = True  # Optionally set this to True
+    torch.backends.cudnn.enabled = False
+
     transform = transforms.Compose([
     transforms.Resize((128, 128)),  # Resize images to 128x128
     transforms.ToTensor(),          # Convert images to tensors
     transforms.Normalize((0.5,), (0.5,))  # Normalize images (mean and std should be adjusted based on your dataset)
 ])
-    #train_dataset = datasets.ImageFolder(root='recurrent_vision_transformers/results_problem_1/train', transform=transform)
-    #val_dataset = datasets.ImageFolder(root='recurrent_vision_transformers/results_problem_1/val', transform=transform)
-    test_dataset = datasets.ImageFolder(root='recurrent_vision_transformers/results_problem_1/test', transform=transform)
+    problem_path = 'results_' + args.problem_number
+    train_dataset = datasets.ImageFolder(root=f'recurrent_vision_transformers/{problem_path}/train', transform=transform)
+    val_dataset = datasets.ImageFolder(root=f'recurrent_vision_transformers/{problem_path}/val', transform=transform)
+    test_dataset = datasets.ImageFolder(root=f'recurrent_vision_transformers/{problem_path}/test', transform=transform)
+
 
     
+
     print("Created train_dataset, val_dataset, and test_dataset")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -186,44 +199,35 @@ if __name__ == "__main__":
     params = [
         {'lr': 0.0001, 'batch_size': 64, 'epochs': 10}
     ]
-    #best_params, best_val_accuracy = hyperparameter_tuning(params, train_dataset, val_dataset)
-    #print(f"Best parameters: {best_params}, Best validation accuracy: {best_val_accuracy}")
 
-    best_params = params[0]
+    best_params, best_val_accuracy = hyperparameter_tuning(params, train_dataset, val_dataset, args.problem_number)
+    print(f"Best parameters: {best_params}, Best validation accuracy: {best_val_accuracy}")
+
+    
     # Load best model and test
     model = DeepNet().to(device)
     optimizer = optim.Adam(model.parameters(), lr=best_params['lr'])
-    epoch, train_losses, val_losses = load_checkpoint('best_model.pth', model, optimizer)
+    epoch, train_losses, val_losses = load_checkpoint(args.problem_number + '_best_model.pth', model, optimizer)
     test_loader = DataLoader(test_dataset, batch_size=best_params['batch_size'], shuffle=False)
     test_accuracy, predictions, true_labels = test(model, device, test_loader)
     print(f"Test accuracy: {test_accuracy}")
 
    
 
-
     predictions = [int(prediction) for prediction in predictions]
     true_labels = [int(true_label) for true_label in true_labels]
     train_losses = [loss for loss in train_losses]
     val_losses = [loss for loss in val_losses]
-    #train_accuracies = [float(acc) for acc in train_accuracies]
-    #val_accuracies = [float(acc) for acc in val_accuracies]
+    
 
-    #print(type(predictions))
-    #print(type(true_labels))
-    #print(type(train_losses))
-    #print(type(val_losses))
-    # Save predictions and losses to file
     results = {
         'predictions': predictions,
         'true_labels': true_labels,
         'train_losses': train_losses,
         'val_losses': val_losses,
-        #'train_accuracies': train_accuracies,
-        #'val_accuracies': val_accuracies,
         'test_accuracy': test_accuracy
     }
 
-    with open('results.json', 'w') as f:
+    with open(args.problem_number+'_results.json', 'w') as f:
         json.dump(results, f)
-
 
