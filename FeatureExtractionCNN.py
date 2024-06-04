@@ -10,8 +10,8 @@ from tqdm import tqdm
 import argparse
 
 
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 print(device)
 
 transform = transforms.Compose([
@@ -53,32 +53,52 @@ class MultiscaleFeatureExtractor(nn.Module):
         
         return fused_conv3
 
-class MLP(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
-        super(MLP, self).__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
-    
+class CNN(nn.Module):
+    def __init__(self):
+        super(CNN, self).__init__()
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(512, 256, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(64, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 16, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)
+        )
+        self.fc_layers = nn.Sequential(
+            nn.Linear(16 * 1 * 1, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1),
+        )
+
     def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
+        x = self.conv_layers(x)
+        x = x.view(x.size(0), -1)  # Flatten the tensor
+        x = self.fc_layers(x)
         return x
 
+
+
 class VQAResNet152(nn.Module):
-    def __init__(self, hidden_dim=512, output_dim=1000):  # Example dimensions
+    def __init__(self):
         super(VQAResNet152, self).__init__()
         self.feature_extractor = MultiscaleFeatureExtractor()
-        self.mlp = MLP(input_dim=16*16*512, hidden_dim=hidden_dim, output_dim=output_dim)
-    
+        self.cnn = CNN()
+
     def forward(self, x):
-        # Extract and fuse features
         fused_features = self.feature_extractor(x)
-        # Flatten the fused features
-        flattened_features = fused_features.view(fused_features.size(0), -1)
-        # Pass through the MLP for final prediction
-        output = self.mlp(flattened_features)
+        output = self.cnn(fused_features)
         return output
-    
+
 
 def train(model, train_loader, criterion, optimizer, device):
     model.train()
@@ -98,14 +118,14 @@ def train(model, train_loader, criterion, optimizer, device):
         optimizer.step()
 
         running_loss += loss.item()
-        # _, preds = torch.max(outputs, 1)
         preds = torch.sigmoid(outputs).round()
-        all_preds.extend(preds.cpu().numpy())
-        all_labels.extend(labels.cpu().numpy())
+        all_preds.extend(preds.detach().cpu().numpy())
+        all_labels.extend(labels.detach().cpu().numpy())
 
     epoch_loss = running_loss / len(train_loader.dataset)
     epoch_acc = accuracy_score(all_labels, all_preds)
     return epoch_loss, epoch_acc
+
 
 def evaluate(model, val_loader, criterion, device):
     model.eval()
@@ -120,17 +140,25 @@ def evaluate(model, val_loader, criterion, device):
             labels = labels.float().view(-1, 1)
 
             outputs = model(images)
+            # print(outputs)
             loss = criterion(outputs, labels)
 
-            running_loss += loss.item() * images.size(0)
+            running_loss += loss.item()
             # _, preds = torch.max(outputs, 1)
             preds = torch.sigmoid(outputs).round()
+            # print(preds)
+            # input()
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
     epoch_loss = running_loss / len(val_loader.dataset)
     epoch_acc = accuracy_score(all_labels, all_preds)
     return epoch_loss, epoch_acc
+
+    epoch_loss = running_loss / len(val_loader.dataset)
+    epoch_acc = accuracy_score(all_labels, all_preds)
+    return epoch_loss, epoch_acc
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a VQA model on the SVRT dataset")
@@ -150,12 +178,12 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=4)
-    
+
     print("Loaded Data")
 
-    model = VQAResNet152(output_dim=1).to(device)
+    model = VQAResNet152().to(device)
 
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.BCEWithLogitsLoss()  # Using BCEWithLogitsLoss for binary classification
     optimizer = optim.Adam(model.parameters(), lr=0.001)
 
     num_epochs = 10
@@ -164,16 +192,12 @@ if __name__ == "__main__":
     for epoch in range(num_epochs):
         train_loss, train_acc = train(model, train_loader, criterion, optimizer, device)
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        
-        print(f"Epoch {epoch+1}/{num_epochs}")
+
+        print(f"Epoch {epoch + 1}/{num_epochs}")
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
         print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
-        losses.append(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
+        losses.append(f"Epoch {epoch + 1}, Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
 
-   #  with open(f'{args.loss_file}.txt', 'w') as f:
-   #     for loss in losses:
-   #         f.write(loss + "\n")
-    
     torch.save(model.state_dict(), f'{args.model_name}.pth')
 
     test_loss, test_acc = evaluate(model, test_loader, criterion, device)
