@@ -175,7 +175,7 @@ if __name__ == "__main__":
 
     #torch.backends.cudnn.benchmark = False  # Try setting this to False
     #torch.backends.cudnn.deterministic = True  # Optionally set this to True
-    torch.backends.cudnn.enabled = False
+    #torch.backends.cudnn.enabled = False
 
     transform = transforms.Compose([
     transforms.Resize((128, 128)),  # Resize images to 128x128
